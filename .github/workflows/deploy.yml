@@ -1,0 +1,47 @@
+name: Run Telegram Bot 24/7
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 */4 * * *'  # Перезапуск каждые 4 часа
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '6.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --no-restore
+
+    - name: Run Telegram Bot
+      run: |
+        echo "🚀 Запуск бота..."
+        nohup dotnet run &
+        sleep 300
+        
+        if ps aux | grep -q "[d]otnet run"; then
+          echo "✅ Бот успешно запущен"
+        else
+          echo "❌ Ошибка запуска бота"
+          exit 1
+        fi
+        
+        while true; do
+          sleep 60
+          if ! ps aux | grep -q "[d]otnet run"; then
+            echo "🔄 Бот упал, перезапускаем..."
+            nohup dotnet run &
+          fi
+        done
