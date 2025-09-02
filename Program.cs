@@ -12,9 +12,28 @@ namespace Standoff2BoostBot
 {
     public class Program
     {
-        private const string BotToken = "8342644005:AAHTb1NDunMgtJ2dk3VZBpji5xWG9M-JgmI";
-        private const string SellerUsername = "krizzly2150";
-        private const string OrdersChannelId = "@your_orders_channel"; // Замените на username/ID вашего канала
+        // Добавьте в начало файла после using
+        public class OrderData
+        {
+            public string OrderNumber { get; set; } = null!;
+            public long CustomerId { get; set; }
+            public string? CustomerUsername { get; set; }
+            public string SelectedMode { get; set; } = null!;
+            public int CurrentMMR { get; set; }
+            public string DesiredRank { get; set; } = null!;
+            public long PlayerID { get; set; }
+            public DateTime OrderDate { get; set; }
+            public string Status { get; set; } = "new"; // new, in_progress, completed
+        }
+
+        public static class OrderManager
+        {
+            public static readonly Dictionary<string, OrderData> Orders = new();
+            public static readonly Dictionary<int, string> MessageToOrderMap = new(); // messageId -> orderNumber
+        }
+        private static string BotToken => Environment.GetEnvironmentVariable("BOT_TOKEN") ?? "8342644005:AAHTb1NDunMgtJ2dk3VZBpji5xWG9M-JgmI";
+        private static string SellerUsername => Environment.GetEnvironmentVariable("SELLER_USERNAME") ?? "krizzly2150";
+        private static string OrdersGroupId => Environment.GetEnvironmentVariable("ORDERS_GROUP_ID") ?? "-1002946352030"; // Замените на ваш group ID
 
         // Состояния пользователей
         private static readonly Dictionary<long, UserState> UserStates = new();
@@ -95,7 +114,7 @@ namespace Standoff2BoostBot
                 new[] { InlineKeyboardButton.WithCallbackData("🥈 Серебро 2", "rank_silver2") },
                 new[] { InlineKeyboardButton.WithCallbackData("🥈 Серебро 3", "rank_silver3") },
                 new[] { InlineKeyboardButton.WithCallbackData("🥈 Серебро 4", "rank_silver4") },
-                new[] { 
+                new[] {
                     InlineKeyboardButton.WithCallbackData("⬅️ Назад", "ranks_prev_bronze"),
                     InlineKeyboardButton.WithCallbackData("➡️ Далее", "ranks_next_gold")
                 }
@@ -111,7 +130,7 @@ namespace Standoff2BoostBot
                 new[] { InlineKeyboardButton.WithCallbackData("🥇 Золото 2", "rank_gold2") },
                 new[] { InlineKeyboardButton.WithCallbackData("🥇 Золото 3", "rank_gold3") },
                 new[] { InlineKeyboardButton.WithCallbackData("🥇 Золото 4", "rank_gold4") },
-                new[] { 
+                new[] {
                     InlineKeyboardButton.WithCallbackData("⬅️ Назад", "ranks_prev_silver"),
                     InlineKeyboardButton.WithCallbackData("➡️ Далее", "ranks_next_higher")
                 }
@@ -138,7 +157,7 @@ namespace Standoff2BoostBot
         {
             return new InlineKeyboardMarkup(new[]
             {
-                new[] { 
+                new[] {
                     InlineKeyboardButton.WithCallbackData("✅ Да, всё верно", "confirm_yes"),
                     InlineKeyboardButton.WithCallbackData("❌ Отмена", "confirm_no")
                 }
@@ -148,6 +167,11 @@ namespace Standoff2BoostBot
         // Обработка сообщений
         private static async Task HandleUpdateAsync(ITelegramBotClient botClient, Update update, CancellationToken cancellationToken)
         {
+            if (update.Message != null && update.Message.Chat.Type == ChatType.Group)
+            {
+                Console.WriteLine($"Group ID: {update.Message.Chat.Id}");
+                return;
+            }
             try
             {
                 if (update.Type == UpdateType.Message && update.Message != null)
@@ -163,6 +187,101 @@ namespace Standoff2BoostBot
             {
                 Console.WriteLine($"Ошибка: {ex.Message}");
             }
+        }
+        private static async Task HandleTakeOrder(ITelegramBotClient botClient, CallbackQuery callbackQuery, string data, CancellationToken cancellationToken)
+        {
+            var orderNumber = data.Replace("take_order_", "");
+            var messageId = callbackQuery.Message.MessageId;
+            var chatId = callbackQuery.Message.Chat.Id;
+
+            if (OrderManager.Orders.TryGetValue(orderNumber, out var order))
+            {
+                // Обновляем статус заказа
+                order.Status = "in_progress";
+
+                // Обновляем сообщение в группе
+                var updatedText = callbackQuery.Message.Text.Replace("🆕 НОВЫЙ", "🟡 В РАБОТЕ");
+
+                var newKeyboard = new InlineKeyboardMarkup(new[]
+                {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("✅ ВЫПОЛНЕНО", $"complete_order_{orderNumber}")
+            },
+            new[]
+            {
+                InlineKeyboardButton.WithUrl("💬 Написать покупателю", $"tg://user?id={order.CustomerId}")
+            }
+        });
+
+                await botClient.EditMessageTextAsync(
+                    chatId: chatId,
+                    messageId: messageId,
+                    text: updatedText,
+                    parseMode: ParseMode.Markdown,
+                    replyMarkup: newKeyboard,
+                    cancellationToken: cancellationToken);
+            }
+        }
+
+        private static async Task HandleCompleteOrder(ITelegramBotClient botClient, CallbackQuery callbackQuery, string data, CancellationToken cancellationToken)
+        {
+            var orderNumber = data.Replace("complete_order_", "");
+            var messageId = callbackQuery.Message.MessageId;
+            var chatId = callbackQuery.Message.Chat.Id;
+
+            if (OrderManager.Orders.TryGetValue(orderNumber, out var order))
+            {
+                // Клавиатура с подтверждением закрытия
+                var confirmKeyboard = new InlineKeyboardMarkup(new[]
+                {
+            new[]
+            {
+                InlineKeyboardButton.WithCallbackData("✅ ДА, ЗАКРЫТЬ", $"confirm_close_{orderNumber}_{messageId}"),
+                InlineKeyboardButton.WithCallbackData("❌ НЕТ", $"cancel_close_{messageId}")
+            }
+        });
+
+                await botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: $"❓ *Вы уверены, что хотите закрыть заказ #{orderNumber}?*",
+                    parseMode: ParseMode.Markdown,
+                    replyMarkup: confirmKeyboard,
+                    cancellationToken: cancellationToken);
+            }
+        }
+
+        private static async Task HandleConfirmClose(ITelegramBotClient botClient, CallbackQuery callbackQuery, string data, CancellationToken cancellationToken)
+        {
+            var parts = data.Replace("confirm_close_", "").Split('_');
+            var orderNumber = parts[0];
+            var targetMessageId = int.Parse(parts[1]);
+
+            if (OrderManager.Orders.TryGetValue(orderNumber, out var order))
+            {
+                order.Status = "completed";
+
+                // Удаляем сообщение с заказом
+                await botClient.DeleteMessageAsync(callbackQuery.Message.Chat.Id, targetMessageId, cancellationToken);
+
+                // Удаляем сообщение с подтверждением
+                await botClient.DeleteMessageAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId, cancellationToken);
+
+                // Отправляем уведомление о закрытии
+                await botClient.SendTextMessageAsync(
+                    chatId: callbackQuery.Message.Chat.Id,
+                    text: $"✅ *Заказ #{orderNumber} закрыт*",
+                    parseMode: ParseMode.Markdown,
+                    cancellationToken: cancellationToken);
+            }
+        }
+
+        private static async Task HandleCloseOrder(ITelegramBotClient botClient, CallbackQuery callbackQuery, string data, CancellationToken cancellationToken)
+        {
+            var orderNumber = data.Replace("close_order_", "");
+
+            // Удаляем сообщение с подтверждением
+            await botClient.DeleteMessageAsync(callbackQuery.Message.Chat.Id, callbackQuery.Message.MessageId, cancellationToken);
         }
 
         private static async Task HandleMessage(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
@@ -221,11 +340,11 @@ namespace Standoff2BoostBot
                         case UserStateState.WaitingForMMR:
                             await ProcessMMRInput(botClient, chatId, text, userState, cancellationToken);
                             break;
-                            
+
                         case UserStateState.WaitingForID:
                             await ProcessIDInput(botClient, chatId, text, userState, cancellationToken);
                             break;
-                            
+
                         default:
                             await botClient.SendTextMessageAsync(
                                 chatId: chatId,
@@ -352,7 +471,7 @@ namespace Standoff2BoostBot
             // Сохраняем MMR и переходим к выбору звания
             userState.CurrentMMR = mmr;
             userState.CurrentState = UserStateState.ChoosingRank;
-            
+
             await botClient.SendTextMessageAsync(
                 chatId: chatId,
                 text: $"✅ *Ваш текущий MMR: {mmr} принят!*\n\n" +
@@ -393,7 +512,7 @@ namespace Standoff2BoostBot
             // Сохраняем ID и показываем подтверждение
             userState.PlayerID = playerId;
             userState.CurrentState = UserStateState.Confirmation;
-            
+
             // Формируем текст для подтверждения
             var confirmationText = "📋 *Пожалуйста, проверьте ваши данные:*\n\n" +
                                  $"🎮 *Режим:* {userState.SelectedMode}\n" +
@@ -418,164 +537,188 @@ namespace Standoff2BoostBot
 
             try
             {
-                switch (data)
+                // Обработка кнопок заказов
+                if (data.StartsWith("take_order_"))
                 {
-                    case "back_to_main":
-                        await botClient.DeleteMessageAsync(chatId, messageId, cancellationToken);
-                        await SendWelcomeMessage(botClient, chatId, cancellationToken);
-                        break;
+                    await HandleTakeOrder(botClient, callbackQuery, data, cancellationToken);
+                }
+                else if (data.StartsWith("complete_order_"))
+                {
+                    await HandleCompleteOrder(botClient, callbackQuery, data, cancellationToken);
+                }
+                else if (data.StartsWith("confirm_close_"))
+                {
+                    await HandleConfirmClose(botClient, callbackQuery, data, cancellationToken);
+                }
+                else if (data.StartsWith("close_order_"))
+                {
+                    await HandleCloseOrder(botClient, callbackQuery, data, cancellationToken);
+                }
+                else if (data.StartsWith("cancel_close_"))
+                {
+                    await botClient.DeleteMessageAsync(chatId, messageId, cancellationToken);
+                }
+                else
+                {
+                    switch (data)
+                    {
+                        case "back_to_main":
+                            await botClient.DeleteMessageAsync(chatId, messageId, cancellationToken);
+                            await SendWelcomeMessage(botClient, chatId, cancellationToken);
+                            break;
 
-                    case "buy_now":
-                        await botClient.EditMessageTextAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            text: "🎮 *Выберите режим игры:*",
-                            parseMode: ParseMode.Markdown,
-                            replyMarkup: GetModeSelectKeyboard(),
-                            cancellationToken: cancellationToken);
-                        break;
-
-                    case "mode_comp":
-                    case "mode_allies":
-                    case "mode_duels":
-                        var modeName = data switch
-                        {
-                            "mode_comp" => "Соревновательный [5x5]",
-                            "mode_allies" => "Союзники [2x2]",
-                            "mode_duels" => "Дуэли [1x1]",
-                            _ => "Режим"
-                        };
-
-                        if (!UserStates.ContainsKey(chatId))
-                            UserStates[chatId] = new UserState();
-
-                        UserStates[chatId].SelectedMode = modeName;
-                        UserStates[chatId].CurrentState = UserStateState.WaitingForMMR;
-
-                        await botClient.EditMessageTextAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            text: $"🎯 *Выбран режим: {modeName}*\n\n" +
-                                 "📊 *Пожалуйста, введите ваш текущий MMR:*\n\n" +
-                                 "ℹ️ MMR должен быть числом от 0 до 2100\n" +
-                                 "📝 *Пример:* 1250",
-                            parseMode: ParseMode.Markdown,
-                            cancellationToken: cancellationToken);
-                        break;
-
-                    // Навигация по званиям
-                    case "ranks_next_silver":
-                        await botClient.EditMessageReplyMarkupAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            replyMarkup: GetSilverRanksKeyboard(),
-                            cancellationToken: cancellationToken);
-                        break;
-                        
-                    case "ranks_next_gold":
-                        await botClient.EditMessageReplyMarkupAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            replyMarkup: GetGoldRanksKeyboard(),
-                            cancellationToken: cancellationToken);
-                        break;
-                        
-                    case "ranks_next_higher":
-                        await botClient.EditMessageReplyMarkupAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            replyMarkup: GetHigherRanksKeyboard(),
-                            cancellationToken: cancellationToken);
-                        break;
-                        
-                    case "ranks_prev_bronze":
-                        await botClient.EditMessageReplyMarkupAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            replyMarkup: GetBronzeRanksKeyboard(),
-                            cancellationToken: cancellationToken);
-                        break;
-                        
-                    case "ranks_prev_silver":
-                        await botClient.EditMessageReplyMarkupAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            replyMarkup: GetSilverRanksKeyboard(),
-                            cancellationToken: cancellationToken);
-                        break;
-                        
-                    case "ranks_prev_gold":
-                        await botClient.EditMessageReplyMarkupAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            replyMarkup: GetGoldRanksKeyboard(),
-                            cancellationToken: cancellationToken);
-                        break;
-
-                    // Обработка выбора звания
-                    case string s when s.StartsWith("rank_"):
-                        var rankName = data switch
-                        {
-                            "rank_bronze1" => "Бронза 1",
-                            "rank_bronze2" => "Бронза 2",
-                            "rank_bronze3" => "Бронза 3",
-                            "rank_bronze4" => "Бронза 4",
-                            "rank_silver1" => "Серебро 1",
-                            "rank_silver2" => "Серебро 2",
-                            "rank_silver3" => "Серебро 3",
-                            "rank_silver4" => "Серебро 4",
-                            "rank_gold1" => "Золото 1",
-                            "rank_gold2" => "Золото 2",
-                            "rank_gold3" => "Золото 3",
-                            "rank_gold4" => "Золото 4",
-                            "rank_phoenix" => "Феникс",
-                            "rank_ranger" => "Ренжер",
-                            "rank_champion" => "Чемпион",
-                            "rank_master" => "Мастер",
-                            "rank_elite" => "Элита",
-                            "rank_legend" => "Легенда",
-                            _ => "Неизвестное звание"
-                        };
-
-                        if (UserStates.ContainsKey(chatId))
-                        {
-                            UserStates[chatId].DesiredRank = rankName;
-                            UserStates[chatId].CurrentState = UserStateState.WaitingForID;
-                            
+                        case "buy_now":
                             await botClient.EditMessageTextAsync(
                                 chatId: chatId,
                                 messageId: messageId,
-                                text: $"✅ *Выбрано звание: {rankName}*\n\n" +
-                                     "🆔 *Теперь введите ваш внутриигровой ID:*\n\n" +
-                                     "ℹ️ ID должен состоять из 8 или 9 цифр\n" +
-                                     "📝 *Пример:* 51345522",
+                                text: "🎮 *Выберите режим игры:*",
+                                parseMode: ParseMode.Markdown,
+                                replyMarkup: GetModeSelectKeyboard(),
+                                cancellationToken: cancellationToken);
+                            break;
+
+                        case "mode_comp":
+                        case "mode_allies":
+                        case "mode_duels":
+                            var modeName = data switch
+                            {
+                                "mode_comp" => "Соревновательный [5x5]",
+                                "mode_allies" => "Союзники [2x2]",
+                                "mode_duels" => "Дуэли [1x1]",
+                                _ => "Режим"
+                            };
+
+                            if (!UserStates.ContainsKey(chatId))
+                                UserStates[chatId] = new UserState();
+
+                            UserStates[chatId].SelectedMode = modeName;
+                            UserStates[chatId].CurrentState = UserStateState.WaitingForMMR;
+
+                            await botClient.EditMessageTextAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                text: $"🎯 *Выбран режим: {modeName}*\n\n" +
+                                     "📊 *Пожалуйста, введите ваш текущий MMR:*\n\n" +
+                                     "ℹ️ MMR должен быть числом от 0 до 2100\n" +
+                                     "📝 *Пример:* 1250",
                                 parseMode: ParseMode.Markdown,
                                 cancellationToken: cancellationToken);
-                        }
-                        break;
+                            break;
 
-                    case "confirm_yes":
-                        await ProcessOrderConfirmation(botClient, chatId, cancellationToken);
-                        break;
+                        // Навигация по званиям
+                        case "ranks_next_silver":
+                            await botClient.EditMessageReplyMarkupAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                replyMarkup: GetSilverRanksKeyboard(),
+                                cancellationToken: cancellationToken);
+                            break;
 
-                    case "confirm_no":
-                        if (UserStates.ContainsKey(chatId))
-                        {
-                            UserStates[chatId].CurrentState = UserStateState.MainMenu;
-                        }
-                        
-                        await botClient.EditMessageTextAsync(
-                            chatId: chatId,
-                            messageId: messageId,
-                            text: "❌ *Заказ отменен.*\n\n" +
-                                 "Если передумаете - всегда можете оформить новый заказ!",
-                            parseMode: ParseMode.Markdown,
-                            cancellationToken: cancellationToken);
-                        break;
+                        case "ranks_next_gold":
+                            await botClient.EditMessageReplyMarkupAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                replyMarkup: GetGoldRanksKeyboard(),
+                                cancellationToken: cancellationToken);
+                            break;
 
-                    default:
-                        await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Неизвестная команда", cancellationToken: cancellationToken);
-                        break;
+                        case "ranks_next_higher":
+                            await botClient.EditMessageReplyMarkupAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                replyMarkup: GetHigherRanksKeyboard(),
+                                cancellationToken: cancellationToken);
+                            break;
+
+                        case "ranks_prev_bronze":
+                            await botClient.EditMessageReplyMarkupAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                replyMarkup: GetBronzeRanksKeyboard(),
+                                cancellationToken: cancellationToken);
+                            break;
+
+                        case "ranks_prev_silver":
+                            await botClient.EditMessageReplyMarkupAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                replyMarkup: GetSilverRanksKeyboard(),
+                                cancellationToken: cancellationToken);
+                            break;
+
+                        case "ranks_prev_gold":
+                            await botClient.EditMessageReplyMarkupAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                replyMarkup: GetGoldRanksKeyboard(),
+                                cancellationToken: cancellationToken);
+                            break;
+
+                        // Обработка выбора звания
+                        case string s when s.StartsWith("rank_"):
+                            var rankName = data switch
+                            {
+                                "rank_bronze1" => "Бронза 1",
+                                "rank_bronze2" => "Бронза 2",
+                                "rank_bronze3" => "Бронза 3",
+                                "rank_bronze4" => "Бронза 4",
+                                "rank_silver1" => "Серебро 1",
+                                "rank_silver2" => "Серебро 2",
+                                "rank_silver3" => "Серебро 3",
+                                "rank_silver4" => "Серебро 4",
+                                "rank_gold1" => "Золото 1",
+                                "rank_gold2" => "Золото 2",
+                                "rank_gold3" => "Золото 3",
+                                "rank_gold4" => "Золото 4",
+                                "rank_phoenix" => "Феникс",
+                                "rank_ranger" => "Ренжер",
+                                "rank_champion" => "Чемпион",
+                                "rank_master" => "Мастер",
+                                "rank_elite" => "Элита",
+                                "rank_legend" => "Легенда",
+                                _ => "Неизвестное звание"
+                            };
+
+                            if (UserStates.ContainsKey(chatId))
+                            {
+                                UserStates[chatId].DesiredRank = rankName;
+                                UserStates[chatId].CurrentState = UserStateState.WaitingForID;
+
+                                await botClient.EditMessageTextAsync(
+                                    chatId: chatId,
+                                    messageId: messageId,
+                                    text: $"✅ *Выбрано звание: {rankName}*\n\n" +
+                                         "🆔 *Теперь введите ваш внутриигровой ID:*\n\n" +
+                                         "ℹ️ ID должен состоять из 8 или 9 цифр\n" +
+                                         "📝 *Пример:* 51345522",
+                                    parseMode: ParseMode.Markdown,
+                                    cancellationToken: cancellationToken);
+                            }
+                            break;
+
+                        case "confirm_yes":
+                            await ProcessOrderConfirmation(botClient, chatId, cancellationToken);
+                            break;
+
+                        case "confirm_no":
+                            if (UserStates.ContainsKey(chatId))
+                            {
+                                UserStates[chatId].CurrentState = UserStateState.MainMenu;
+                            }
+
+                            await botClient.EditMessageTextAsync(
+                                chatId: chatId,
+                                messageId: messageId,
+                                text: "❌ *Заказ отменен.*\n\n" +
+                                     "Если передумаете - всегда можете оформить новый заказ!",
+                                parseMode: ParseMode.Markdown,
+                                cancellationToken: cancellationToken);
+                            break;
+
+                        default:
+                            await botClient.AnswerCallbackQueryAsync(callbackQuery.Id, "Неизвестная команда", cancellationToken: cancellationToken);
+                            break;
+                    }
                 }
             }
             catch (Exception ex)
@@ -588,7 +731,7 @@ namespace Standoff2BoostBot
 
         private static async Task ProcessOrderConfirmation(ITelegramBotClient botClient, long chatId, CancellationToken cancellationToken)
         {
-            if (!UserStates.ContainsKey(chatId) || UserStates[chatId].CurrentMMR == null || 
+            if (!UserStates.ContainsKey(chatId) || UserStates[chatId].CurrentMMR == null ||
                 string.IsNullOrEmpty(UserStates[chatId].DesiredRank) || UserStates[chatId].PlayerID == null)
             {
                 await botClient.SendTextMessageAsync(chatId, "❌ Ошибка данных заказа", cancellationToken: cancellationToken);
@@ -596,70 +739,108 @@ namespace Standoff2BoostBot
             }
 
             var userState = UserStates[chatId];
-            var orderNumber = DateTime.Now.ToString("yyyyMMddHHmmss"); // Генерируем номер заказа
+            var orderNumber = DateTime.Now.ToString("yyyyMMddHHmmss");
+            var orderDate = DateTime.Now;
 
-            // Формируем красивый текст для канала заказов
-            var orderText = $"🛒 *ЗАКАЗ #{orderNumber}* 🛒\n\n" +
-                           $"👤 *Покупатель:* {(userState.UserName != null ? "@" + userState.UserName : "Unknown")}\n" +
-                           $"🆔 *ID покупателя:* {chatId}\n" +
-                           $"🎮 *Режим:* {userState.SelectedMode}\n\n" +
-                           $"─━─━─━─━─━─━─━─━─━─━─━─━─━─\n\n" +
-                           $"📊 *Текущий MMR:* {userState.CurrentMMR}\n" +
-                           $"⭐ *Желаемое звание:* {userState.DesiredRank}\n" +
-                           $"🆔 *ID аккаунта:* {userState.PlayerID}\n\n" +
-                           $"─━─━─━─━─━─━─━─━─━─━─━─━─━─\n\n" +
-                           $"⏰ *Время:* {DateTime.Now:dd.MM.yyyy HH:mm}\n" +
-                           $"🔗 *Ссылка:* [Написать покупателю](tg://user?id={chatId})";
+            // Сохраняем заказ
+            var orderData = new OrderData
+            {
+                OrderNumber = orderNumber,
+                CustomerId = chatId,
+                CustomerUsername = userState.UserName,
+                SelectedMode = userState.SelectedMode!,
+                CurrentMMR = userState.CurrentMMR.Value,
+                DesiredRank = userState.DesiredRank!,
+                PlayerID = userState.PlayerID.Value,
+                OrderDate = orderDate
+            };
+
+            OrderManager.Orders[orderNumber] = orderData;
+
+            // Формируем красивый текст заказа
+            var orderText = $@"🎯 *НОВЫЙ ЗАКАЗ #{orderNumber}* 🎯
+📅 *Дата:* {orderDate:dd.MM.yyyy HH:mm}
+
+👤 *ПОКУПАТЕЛЬ:*
+├─ Имя: {(string.IsNullOrEmpty(userState.UserName) ? "Не указано" : $"@{userState.UserName}")}
+└─ ID: `{chatId}`
+
+🎮 *ДАННЫЕ ЗАКАЗА:*
+├─ Режим: {userState.SelectedMode}
+├─ Текущий MMR: {userState.CurrentMMR}
+├─ Желаемое звание: {userState.DesiredRank}
+└─ ID аккаунта: `{userState.PlayerID}`
+
+⏰ *Время создания:* {orderDate:HH:mm:ss}
+📊 *Статус:* 🆕 НОВЫЙ";
+
+            // Клавиатура для заказа
+            var orderKeyboard = new InlineKeyboardMarkup(new[]
+            {
+        new[]
+        {
+            InlineKeyboardButton.WithCallbackData("✅ ВЗЯТЬ В РАБОТУ", $"take_order_{orderNumber}")
+        },
+        new[]
+        {
+            InlineKeyboardButton.WithUrl("💬 Написать покупателю", $"tg://user?id={chatId}")
+        }
+    });
 
             try
             {
-                // Отправляем заказ в канал
-                await botClient.SendTextMessageAsync(
-                    chatId: OrdersChannelId,
+                // Отправляем заказ в группу
+                var groupMessage = await botClient.SendTextMessageAsync(
+                    chatId: OrdersGroupId,
                     text: orderText,
                     parseMode: ParseMode.Markdown,
+                    replyMarkup: orderKeyboard,
                     cancellationToken: cancellationToken);
 
-                // Логируем заказ в консоль
-                Console.WriteLine($"=== НОВЫЙ ЗАКАЗ #{orderNumber} ===");
-                Console.WriteLine(orderText);
-                Console.WriteLine("================================");
+                // Сохраняем связь сообщения с заказом
+                OrderManager.MessageToOrderMap[groupMessage.MessageId] = orderNumber;
 
-                // Сохраняем в файл
-                System.IO.File.AppendAllText("orders.log", $"\n\n{orderText}\n");
+                Console.WriteLine($"✅ Заказ #{orderNumber} отправлен в группу");
 
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Ошибка отправки заказа в канал: {ex.Message}");
-                System.IO.File.AppendAllText("error_orders.log", $"\nОшибка: {ex.Message}\nЗаказ: {orderText}\n");
+                Console.WriteLine($"❌ Ошибка отправки заказа: {ex.Message}");
+
+                await botClient.SendTextMessageAsync(
+                    chatId: chatId,
+                    text: "⚠️ *Заказ оформлен, но возникла ошибка!*\n\nСвяжитесь с @krizzly2150",
+                    parseMode: ParseMode.Markdown,
+                    cancellationToken: cancellationToken);
+                return;
             }
 
             // Сообщение для покупателя
-            var userMessage = $"✅ *Заказ #{orderNumber} оформлен успешно!* 🎉\n\n" +
-                             $"📞 *Свяжитесь с продавцом:* [@{SellerUsername}](https://t.me/{SellerUsername})\n\n" +
-                             $"⚡ *Продавец свяжется с вами в ближайшее время для уточнения деталей и оплаты!*\n\n" +
-                             $"💡 *Не забудьте ответить продавцу когда он напишет!*";
+            var userMessage = $@"✅ *ЗАКАЗ #{orderNumber} ОФОРМЛЕН!* 🎉
 
-            // Кнопка для быстрого перехода к продавцу
-            var sellerKeyboard = new InlineKeyboardMarkup(
-                InlineKeyboardButton.WithUrl("💬 Написать продавцу", $"https://t.me/{SellerUsername}"));
+📋 *Ваши данные:*
+├─ Режим: {userState.SelectedMode}
+├─ Текущий MMR: {userState.CurrentMMR}
+├─ Желаемое звание: {userState.DesiredRank}
+└─ ID аккаунта: `{userState.PlayerID}`
+
+⏳ *Продавец свяжется с вами в ближайшее время для уточнения деталей и оплаты!*
+
+💡 *Не забудьте ответить когда вам напишут!*";
 
             await botClient.SendTextMessageAsync(
                 chatId: chatId,
                 text: userMessage,
                 parseMode: ParseMode.Markdown,
-                replyMarkup: sellerKeyboard,
                 cancellationToken: cancellationToken);
 
-            // Сбрасываем состояние пользователя
+            // Сбрасываем состояние
             userState.CurrentState = UserStateState.MainMenu;
             userState.CurrentMMR = null;
             userState.DesiredRank = null;
             userState.PlayerID = null;
             userState.SelectedMode = null;
         }
-
         private static Task HandlePollingErrorAsync(ITelegramBotClient botClient, Exception exception, CancellationToken cancellationToken)
         {
             var errorMessage = exception switch
@@ -731,3 +912,4 @@ namespace Standoff2BoostBot
         }
     }
 }
+
